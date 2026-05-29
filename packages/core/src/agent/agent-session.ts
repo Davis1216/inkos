@@ -304,9 +304,20 @@ function assistantErrorMessage(message: AssistantMessage | undefined): string | 
 }
 
 function convertAgentMessagesForModel(messages: AgentMessage[], model: Model<Api>): Message[] {
-  const llmMessages = messages.filter((message): message is Message => {
-    if (!message || typeof message !== "object" || !("role" in message)) return false;
-    return message.role === "user" || message.role === "assistant" || message.role === "toolResult";
+  const llmMessages = messages.flatMap((message): Message[] => {
+    if (!message || typeof message !== "object" || !("role" in message)) return [];
+    const raw = message as { role?: unknown; content?: unknown };
+    if (raw.role === "user" || raw.role === "assistant" || raw.role === "toolResult") {
+      return [message as Message];
+    }
+    if (raw.role === "system" && typeof raw.content === "string") {
+      return [{
+        role: "user",
+        content: raw.content,
+        timestamp: messageTimestamp(message),
+      }];
+    }
+    return [];
   });
 
   const candidate = model as { api?: unknown; baseUrl?: unknown };

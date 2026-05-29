@@ -551,7 +551,7 @@ describe("runAgentSession cache — bookId switch", () => {
     ]);
   });
 
-  it("把真实 Agent 的 message_end 写入 JSONL，并在 cache 失效后恢复 raw AgentMessage", async () => {
+  it("把真实 Agent 的 message_end 写入 JSONL，并在 cache 失效后只恢复可见对话", async () => {
     const model = { provider: "anthropic", id: "fake", api: "anthropic-messages" } as any;
     const pipeline = {} as any;
 
@@ -571,7 +571,8 @@ describe("runAgentSession cache — bookId switch", () => {
     );
 
     expect(agentInstances).toHaveLength(2);
-    expect(JSON.stringify(streamCalls.at(-1)?.context.messages)).toContain("raw thought");
+    expect(JSON.stringify(streamCalls.at(-1)?.context.messages)).toContain("ok");
+    expect(JSON.stringify(streamCalls.at(-1)?.context.messages)).not.toContain("raw thought");
     expect(streamCalls.at(-1)?.context.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ role: "assistant" }),
@@ -579,7 +580,7 @@ describe("runAgentSession cache — bookId switch", () => {
     );
   });
 
-  it("恢复 transcript 中的 toolResult message", async () => {
+  it("恢复 transcript 时把历史 toolResult 折叠成状态摘要", async () => {
     const model = { provider: "anthropic", id: "fake", api: "anthropic-messages" } as any;
     const pipeline = {} as any;
 
@@ -596,9 +597,12 @@ describe("runAgentSession cache — bookId switch", () => {
     );
 
     expect(agentInstances).toHaveLength(2);
-    expect(streamCalls.at(-1)?.context.messages.some(
-      (message: any) => message.role === "toolResult" && message.toolCallId === "tool-1",
-    )).toBe(true);
+    const body = JSON.stringify(streamCalls.at(-1)?.context.messages ?? []);
+    expect(body).toContain("历史状态摘要");
+    expect(body).toContain("read");
+    expect(body).toContain("书A 的真相");
+    expect(body).not.toContain("\"toolCall\"");
+    expect(body).not.toContain("\"toolResult\"");
 
     const messageEvents = (await readTranscriptEvents(projectRoot, "s1"))
       .filter((event) => event.type === "message");
@@ -644,7 +648,7 @@ describe("runAgentSession cache — bookId switch", () => {
     expect(body).toContain("书A 的真相");
   });
 
-  it("Gemini OpenAI-compatible 上下文过滤恢复时补出的 toolResult bridge", async () => {
+  it("Gemini OpenAI-compatible 从历史恢复时使用状态摘要而不是 toolResult bridge", async () => {
     const model = {
       provider: "google",
       id: "gemini-pro-latest",
@@ -661,6 +665,7 @@ describe("runAgentSession cache — bookId switch", () => {
       requestId: "r1",
       seq: 1,
       timestamp: 1,
+      sessionKind: "book",
       input: "use tool",
     });
     await appendTranscriptEvent(projectRoot, {
@@ -734,8 +739,10 @@ describe("runAgentSession cache — bookId switch", () => {
 
     const body = JSON.stringify(streamCalls.at(-1)?.context.messages ?? []);
     expect(body).not.toContain("I have processed the tool results.");
-    expect(body).toContain("[Tool results]");
+    expect(body).toContain("历史状态摘要");
     expect(body).toContain("资料");
+    expect(body).not.toContain("[Tool results]");
+    expect(body).not.toContain("\"toolResult\"");
   });
 
   it("切到 DeepSeek 时不 replay 其他模型的原生 toolCall/toolResult 历史", async () => {
@@ -747,6 +754,7 @@ describe("runAgentSession cache — bookId switch", () => {
       requestId: "r1",
       seq: 1,
       timestamp: 1,
+      sessionKind: "book",
       input: "use tool",
     });
     await appendTranscriptEvent(projectRoot, {
@@ -817,7 +825,7 @@ describe("runAgentSession cache — bookId switch", () => {
     const body = JSON.stringify(messages);
     expect(body).not.toContain("\"toolCall\"");
     expect(messages.some((message: any) => message.role === "toolResult")).toBe(false);
-    expect(body).toContain("[Tool results]");
+    expect(body).toContain("历史状态摘要");
     expect(body).toContain("资料");
   });
 

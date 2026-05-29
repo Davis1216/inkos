@@ -90,7 +90,7 @@ describe("session transcript restore", () => {
     expect(restored[0]).toMatchObject({ role: "user", content: "hi" });
   });
 
-  it("保留 committed toolResult 和 assistant thinking signature", async () => {
+  it("恢复 agent 上下文时把 committed toolResult 折叠为历史摘要", async () => {
     await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,
@@ -158,19 +158,244 @@ describe("session transcript restore", () => {
 
     const restored = await restoreAgentMessagesFromTranscript(projectRoot, "s1");
 
-    expect(restored).toHaveLength(2);
+    const body = JSON.stringify(restored);
+    expect(restored).toHaveLength(1);
     expect(restored[0]).toMatchObject({
-      role: "assistant",
-      content: [
-        { type: "thinking", thinking: "需要查资料", signature: "sig" },
-        { type: "toolCall", id: "tool-1" },
-      ],
+      role: "system",
+      content: expect.stringContaining("历史状态摘要"),
     });
-    expect(restored[1]).toMatchObject({ role: "toolResult", toolCallId: "tool-1", toolName: "read" });
-    expect(JSON.stringify(restored)).not.toContain(TOOL_RESULT_BRIDGE_TEXT);
+    expect(body).toContain("read");
+    expect(body).toContain("资料");
+    expect(body).not.toContain("sig");
+    expect(body).not.toContain("\"toolCall\"");
+    expect(body).not.toContain("\"toolResult\"");
+    expect(body).not.toContain(TOOL_RESULT_BRIDGE_TEXT);
   });
 
-  it("恢复中断工具轮次时只清理空 assistant，不在 raw restore 阶段补 bridge", async () => {
+  it("恢复 agent 上下文时把历史工具回合折叠为 system 摘要而不是继续回放工具消息", async () => {
+    await appendTranscriptEvent(projectRoot, {
+      type: "request_started",
+      version: 1,
+      sessionId: "s1",
+      requestId: "r1",
+      seq: 1,
+      timestamp: 1,
+      sessionKind: "book",
+      input: "写下一章",
+    });
+    await appendTranscriptEvent(projectRoot, {
+      type: "message",
+      version: 1,
+      sessionId: "s1",
+      requestId: "r1",
+      uuid: "u1",
+      parentUuid: null,
+      seq: 2,
+      role: "user",
+      timestamp: 2,
+      message: { role: "user", content: "写下一章", timestamp: 2 },
+    } as MessageEvent);
+    await appendTranscriptEvent(projectRoot, {
+      type: "message",
+      version: 1,
+      sessionId: "s1",
+      requestId: "r1",
+      uuid: "a1",
+      parentUuid: "u1",
+      seq: 3,
+      role: "assistant",
+      timestamp: 3,
+      toolCallId: "tool-1",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tool-1", name: "sub_agent", arguments: { agent: "writer" } }],
+        api: "openai-completions",
+        provider: "openai",
+        model: "deepseek-v4-pro",
+        usage,
+        stopReason: "toolUse",
+        timestamp: 3,
+      },
+    } as MessageEvent);
+    await appendTranscriptEvent(projectRoot, {
+      type: "message",
+      version: 1,
+      sessionId: "s1",
+      requestId: "r1",
+      uuid: "t1",
+      parentUuid: "a1",
+      seq: 4,
+      role: "toolResult",
+      timestamp: 4,
+      toolCallId: "tool-1",
+      sourceToolAssistantUuid: "a1",
+      message: {
+        role: "toolResult",
+        toolCallId: "tool-1",
+        toolName: "sub_agent",
+        content: [{ type: "text", text: "Chapter 12 written." }],
+        isError: false,
+        timestamp: 4,
+      },
+    } as MessageEvent);
+    await appendTranscriptEvent(projectRoot, {
+      type: "request_committed",
+      version: 1,
+      sessionId: "s1",
+      requestId: "r1",
+      seq: 5,
+      timestamp: 5,
+    });
+    await appendTranscriptEvent(projectRoot, {
+      type: "request_started",
+      version: 1,
+      sessionId: "s1",
+      requestId: "r2",
+      seq: 6,
+      timestamp: 6,
+      sessionKind: "book",
+      input: "哪里节奏慢？",
+    });
+    await appendTranscriptEvent(projectRoot, {
+      type: "message",
+      version: 1,
+      sessionId: "s1",
+      requestId: "r2",
+      uuid: "u2",
+      parentUuid: "t1",
+      seq: 7,
+      role: "user",
+      timestamp: 7,
+      message: { role: "user", content: "哪里节奏慢？", timestamp: 7 },
+    } as MessageEvent);
+    await appendTranscriptEvent(projectRoot, {
+      type: "message",
+      version: 1,
+      sessionId: "s1",
+      requestId: "r2",
+      uuid: "a2",
+      parentUuid: "u2",
+      seq: 8,
+      role: "assistant",
+      timestamp: 8,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "第 7 章后半段节奏慢。" }],
+        api: "openai-completions",
+        provider: "openai",
+        model: "deepseek-v4-pro",
+        usage,
+        stopReason: "stop",
+        timestamp: 8,
+      },
+    } as MessageEvent);
+    await appendTranscriptEvent(projectRoot, {
+      type: "request_committed",
+      version: 1,
+      sessionId: "s1",
+      requestId: "r2",
+      seq: 9,
+      timestamp: 9,
+    });
+
+    const restored = await restoreAgentMessagesFromTranscript(projectRoot, "s1", "book");
+    const body = JSON.stringify(restored);
+
+    expect(restored.map((message) => message.role)).toEqual(["system", "user", "assistant"]);
+    expect(body).toContain("历史状态摘要");
+    expect(body).toContain("sub_agent");
+    expect(body).toContain("Chapter 12 written.");
+    expect(body).toContain("哪里节奏慢");
+    expect(body).toContain("第 7 章后半段节奏慢");
+    expect(body).not.toContain("\"toolCall\"");
+    expect(body).not.toContain("\"toolResult\"");
+    expect(body).not.toContain("[Tool results]");
+  });
+
+  it("带 sessionKind 恢复旧 transcript 时保留自然对话但不恢复未知模式的工具结果", async () => {
+    await appendTranscriptEvent(projectRoot, {
+      type: "request_started",
+      version: 1,
+      sessionId: "s1",
+      requestId: "legacy",
+      seq: 1,
+      timestamp: 1,
+      input: "旧会话问题",
+    });
+    await appendTranscriptEvent(projectRoot, {
+      type: "message",
+      version: 1,
+      sessionId: "s1",
+      requestId: "legacy",
+      uuid: "u1",
+      parentUuid: null,
+      seq: 2,
+      role: "user",
+      timestamp: 2,
+      message: { role: "user", content: "旧会话问题", timestamp: 2 },
+    } as MessageEvent);
+    await appendTranscriptEvent(projectRoot, {
+      type: "message",
+      version: 1,
+      sessionId: "s1",
+      requestId: "legacy",
+      uuid: "a1",
+      parentUuid: "u1",
+      seq: 3,
+      role: "assistant",
+      timestamp: 3,
+      toolCallId: "tool-1",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tool-1", name: "sub_agent", arguments: { agent: "writer" } }],
+        api: "openai-completions",
+        provider: "openai",
+        model: "deepseek-v4-pro",
+        usage,
+        stopReason: "toolUse",
+        timestamp: 3,
+      },
+    } as MessageEvent);
+    await appendTranscriptEvent(projectRoot, {
+      type: "message",
+      version: 1,
+      sessionId: "s1",
+      requestId: "legacy",
+      uuid: "t1",
+      parentUuid: "a1",
+      seq: 4,
+      role: "toolResult",
+      timestamp: 4,
+      toolCallId: "tool-1",
+      sourceToolAssistantUuid: "a1",
+      message: {
+        role: "toolResult",
+        toolCallId: "tool-1",
+        toolName: "sub_agent",
+        content: [{ type: "text", text: "legacy chapter result should not return" }],
+        isError: false,
+        timestamp: 4,
+      },
+    } as MessageEvent);
+    await appendTranscriptEvent(projectRoot, {
+      type: "request_committed",
+      version: 1,
+      sessionId: "s1",
+      requestId: "legacy",
+      seq: 5,
+      timestamp: 5,
+    });
+
+    const restored = await restoreAgentMessagesFromTranscript(projectRoot, "s1", "book");
+    const body = JSON.stringify(restored);
+
+    expect(body).toContain("旧会话问题");
+    expect(body).not.toContain("legacy chapter result should not return");
+    expect(body).not.toContain("\"toolCall\"");
+    expect(body).not.toContain("\"toolResult\"");
+  });
+
+  it("恢复中断工具轮次时只保留历史摘要和后续自然输入", async () => {
     await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,
@@ -297,13 +522,14 @@ describe("session transcript restore", () => {
 
     const restored = await restoreAgentMessagesFromTranscript(projectRoot, "s1");
 
-    expect(restored.map((message) => message.role)).toEqual([
-      "user",
-      "assistant",
-      "toolResult",
-      "user",
-    ]);
-    expect(JSON.stringify(restored)).not.toContain(TOOL_RESULT_BRIDGE_TEXT);
+    const body = JSON.stringify(restored);
+    expect(restored.map((message) => message.role)).toEqual(["system", "user"]);
+    expect(body).toContain("历史状态摘要");
+    expect(body).toContain("资料");
+    expect(body).toContain("继续");
+    expect(body).not.toContain("\"toolCall\"");
+    expect(body).not.toContain("\"toolResult\"");
+    expect(body).not.toContain(TOOL_RESULT_BRIDGE_TEXT);
   });
 
   it("移除最后 assistant message 的 trailing thinking block", async () => {
@@ -406,7 +632,7 @@ describe("session transcript restore", () => {
     expect((adapted[0] as any).content).toEqual(messages[0].content);
   });
 
-  it("同模型恢复时保留 reasoning_content 和原生 toolResult 连续性", () => {
+  it("同模型恢复时也把历史工具回合折叠成 system 状态摘要", () => {
     const messages = [
       {
         role: "assistant",
@@ -437,7 +663,19 @@ describe("session transcript restore", () => {
       id: "deepseek-v4-pro",
     });
 
-    expect(adapted).toEqual(messages);
+    const body = JSON.stringify(adapted);
+    expect(adapted).toEqual([
+      expect.objectContaining({
+        role: "system",
+        content: expect.stringContaining("[Historical tool results]"),
+      }),
+    ]);
+    expect(body).toContain("read");
+    expect(body).toContain("tool-1");
+    expect(body).toContain("资料");
+    expect(body).not.toContain("reasoning_content");
+    expect(body).not.toContain("\"toolCall\"");
+    expect(body).not.toContain("\"toolResult\"");
   });
 
   it("does not add synthetic toolResult bridge when target model does not require it", () => {
@@ -471,7 +709,7 @@ describe("session transcript restore", () => {
     expect(JSON.stringify(adapted)).not.toContain(TOOL_RESULT_BRIDGE_TEXT);
   });
 
-  it("adds synthetic toolResult bridge when target model compat requires it", () => {
+  it("does not add synthetic toolResult bridge after folding historical tool results", () => {
     const messages = [
       {
         role: "assistant",
@@ -500,10 +738,14 @@ describe("session transcript restore", () => {
       compat: { requiresAssistantAfterToolResult: true },
     });
 
-    expect(JSON.stringify(adapted)).toContain(TOOL_RESULT_BRIDGE_TEXT);
+    const body = JSON.stringify(adapted);
+    expect(body).toContain("[Historical tool results]");
+    expect(body).toContain("result");
+    expect(body).not.toContain(TOOL_RESULT_BRIDGE_TEXT);
+    expect(body).not.toContain("\"toolResult\"");
   });
 
-  it("跨模型恢复时把原生工具回合降级为 user 文本", () => {
+  it("跨模型恢复时把原生工具回合降级为 system 历史摘要", () => {
     const messages = [
       {
         role: "assistant",
@@ -543,21 +785,22 @@ describe("session transcript restore", () => {
       id: "deepseek-v4-pro",
     });
 
-    expect(JSON.stringify(adapted)).not.toContain("\"toolCall\"");
-    expect(adapted.some((message: any) => message.role === "toolResult")).toBe(false);
+    const body = JSON.stringify(adapted);
+    expect(body).not.toContain("\"toolCall\"");
+    expect(body).not.toContain("\"toolResult\"");
     expect(adapted).toEqual([
       expect.objectContaining({
-        role: "user",
-        content: expect.stringContaining("[Tool results]"),
+        role: "system",
+        content: expect.stringContaining("[Historical tool results]"),
       }),
     ]);
-    expect(JSON.stringify(adapted)).toContain("read");
-    expect(JSON.stringify(adapted)).toContain("tool-1");
-    expect(JSON.stringify(adapted)).toContain("资料");
-    expect(JSON.stringify(adapted)).not.toContain("I have processed the tool results.");
+    expect(body).toContain("read");
+    expect(body).toContain("tool-1");
+    expect(body).toContain("资料");
+    expect(body).not.toContain("I have processed the tool results.");
   });
 
-  it("native Google 同协议恢复时保留 thinking signature 和原生工具回合", () => {
+  it("native Google 同协议恢复时也不把历史工具回合回灌给模型", () => {
     const messages = [
       {
         role: "assistant",
@@ -588,8 +831,18 @@ describe("session transcript restore", () => {
       id: "gemini-pro-latest",
     });
 
-    expect(adapted).toEqual(messages);
-    expect(JSON.stringify(adapted)).toContain("google-signature");
+    const body = JSON.stringify(adapted);
+    expect(adapted).toEqual([
+      expect.objectContaining({
+        role: "system",
+        content: expect.stringContaining("[Historical tool results]"),
+      }),
+    ]);
+    expect(body).toContain("ls");
+    expect(body).toContain("主要角色");
+    expect(body).not.toContain("google-signature");
+    expect(body).not.toContain("\"toolCall\"");
+    expect(body).not.toContain("\"toolResult\"");
   });
 
   it("切到 native Google 时把旧 OpenAI-compatible Gemini 工具回合文本化", () => {
@@ -625,8 +878,8 @@ describe("session transcript restore", () => {
     expect(adapted.some((message: any) => message.role === "toolResult")).toBe(false);
     expect(adapted).toEqual([
       expect.objectContaining({
-        role: "user",
-        content: expect.stringContaining("[Tool results]"),
+        role: "system",
+        content: expect.stringContaining("[Historical tool results]"),
       }),
     ]);
     expect(body).toContain("ls");
@@ -670,7 +923,7 @@ describe("session transcript restore", () => {
     expect(body).not.toContain("deepseek reasoning");
     expect(body).not.toContain("\"toolCall\"");
     expect(body).toContain("先看角色。");
-    expect(body).toContain("[Tool results]");
+    expect(body).toContain("[Historical tool results]");
     expect(body).toContain("林默资料");
   });
 
@@ -701,7 +954,7 @@ describe("session transcript restore", () => {
 
     expect(bounded).toHaveLength(4);
     expect(bounded[3]).toMatchObject({
-      role: "user",
+      role: "system",
       content: expect.stringContaining("以上是已经完成并提交的历史上下文"),
     });
     expect(JSON.stringify(bounded[3])).toContain("优先遵循用户接下来输入的最新指令");

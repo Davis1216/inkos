@@ -69,6 +69,8 @@ const emptyUsage = {
 };
 
 export const TOOL_RESULT_BRIDGE_TEXT = "I have processed the tool results.";
+const MAX_RESTORED_DIALOGUE_MESSAGES = 12;
+const MAX_RESTORED_TOOL_SUMMARY_ITEMS = 8;
 const RESTORED_HISTORY_BOUNDARY_ZH =
   "[已完成的历史上下文]\n" +
   "以上是已经完成并提交的历史上下文，只能用于回忆，不代表当前轮已经执行了动作。\n" +
@@ -110,6 +112,14 @@ function addToolResultBridges(messages: AgentMessage[]): AgentMessage[] {
   return bridged;
 }
 
+function systemMessage(content: string, timestamp: number): AgentMessage {
+  return {
+    role: "system",
+    content,
+    timestamp,
+  } as unknown as AgentMessage;
+}
+
 export function appendRestoredHistoryBoundary(
   messages: AgentMessage[],
   language: string,
@@ -123,11 +133,10 @@ export function appendRestoredHistoryBoundary(
   }, 0) || Date.now();
   return [
     ...messages,
-    {
-      role: "user",
-      content: language === "zh" ? RESTORED_HISTORY_BOUNDARY_ZH : RESTORED_HISTORY_BOUNDARY_EN,
-      timestamp: timestamp + 1,
-    } as AgentMessage,
+    systemMessage(
+      language === "zh" ? RESTORED_HISTORY_BOUNDARY_ZH : RESTORED_HISTORY_BOUNDARY_EN,
+      timestamp + 1,
+    ),
   ];
 }
 
@@ -190,9 +199,8 @@ export function adaptRestoredAgentMessagesForModel(
   target: TargetModelIdentity,
 ): AgentMessage[] {
   const adapted: AgentMessage[] = [];
-  const nativeToolCallIds = new Set<string>();
 
-  const pushToolResultsAsUser = (toolResults: AgentMessage[]) => {
+  const pushToolResultsAsSystem = (toolResults: AgentMessage[]) => {
     const lines = toolResults.flatMap((message) => {
       const raw: Record<string, unknown> = isObject(message) ? message : {};
       const toolName = typeof raw.toolName === "string" ? raw.toolName : "tool";
@@ -215,15 +223,11 @@ export function adaptRestoredAgentMessagesForModel(
       }
       return max;
     }, 0) || Date.now();
-    adapted.push({
-      role: "user",
-      content: [
-        "[Tool results]",
-        ...lines,
-        "These tool results were restored from a previous model run. Use them as context only.",
-      ].join("\n"),
-      timestamp,
-    } as AgentMessage);
+    adapted.push(systemMessage([
+      "[Historical tool results]",
+      "These are completed historical tool results. They are state context, not a new user request.",
+      ...lines,
+    ].join("\n"), timestamp));
   };
 
   for (let index = 0; index < messages.length; index++) {
@@ -238,19 +242,16 @@ export function adaptRestoredAgentMessagesForModel(
         typeof content[0].text === "string" &&
         content[0].text.trim() === TOOL_RESULT_BRIDGE_TEXT;
       const previous = adapted[adapted.length - 1];
+      const previousRole = isObject(previous)
+        ? (previous as Record<string, unknown>).role
+        : undefined;
       if (
         isBridge &&
         isObject(previous) &&
-        previous.role === "user" &&
+        (previousRole === "user" || previousRole === "system") &&
         typeof previous.content === "string" &&
-        previous.content.startsWith("[Tool results]")
+        (previous.content.startsWith("[Tool results]") || previous.content.startsWith("[Historical tool results]"))
       ) {
-        continue;
-      }
-
-      if (Array.isArray(message.content) && isSameAssistantModel(message, target)) {
-        adapted.push(message);
-        for (const id of toolCallIds(message)) nativeToolCallIds.add(id);
         continue;
       }
 
@@ -265,6 +266,10 @@ export function adaptRestoredAgentMessagesForModel(
       );
 
       if (foreignToolCallIds.size === 0) {
+        if (Array.isArray(message.content) && isSameAssistantModel(message, target)) {
+          adapted.push(message);
+          continue;
+        }
         const rewritten = contentWithoutThinking.length === content.length
           ? message
           : ({ ...message, content: contentWithoutThinking } as AgentMessage);
@@ -309,19 +314,14 @@ export function adaptRestoredAgentMessagesForModel(
         nextIndex += 1;
       }
       if (toolResults.length > 0) {
-        pushToolResultsAsUser(toolResults);
+        pushToolResultsAsSystem(toolResults);
         index = nextIndex - 1;
       }
       continue;
     }
 
     if (message.role === "toolResult") {
-      const toolCallId = typeof message.toolCallId === "string" ? message.toolCallId : "";
-      if (nativeToolCallIds.has(toolCallId)) {
-        adapted.push(message);
-      } else {
-        pushToolResultsAsUser([message]);
-      }
+      pushToolResultsAsSystem([message]);
       continue;
     }
 
@@ -360,15 +360,147 @@ export function committedMessageEvents(events: TranscriptEvent[], sessionKind?: 
     .sort((a, b) => a.seq - b.seq);
 }
 
+function requestKindMap(events: TranscriptEvent[]): Map<string, SessionKind | undefined> {
+  return new Map(
+    events
+      .filter((event) => event.type === "request_started")
+      .map((event) => [event.requestId, event.sessionKind]),
+  );
+}
+
+function textOnlyAgentMessage(event: MessageEvent): AgentMessage | null {
+  const raw = event.message as Record<string, unknown>;
+  if (!isObject(raw) || event.role === "toolResult") return null;
+
+  if (event.role === "user" || event.role === "system") {
+    const content = textFromContent(raw.content);
+    return content ? { role: event.role, content, timestamp: event.timestamp } as AgentMessage : null;
+  }
+
+  if (event.role === "assistant") {
+    const textBlocks = contentBlocks(raw).filter(
+      (block): block is { type: "text"; text: string } =>
+        isObject(block) &&
+        block.type === "text" &&
+        typeof block.text === "string" &&
+        block.text.trim().length > 0,
+    );
+    if (textBlocks.length === 0) return null;
+    return {
+      ...raw,
+      role: "assistant",
+      content: textBlocks,
+      timestamp: event.timestamp,
+    } as AgentMessage;
+  }
+
+  return null;
+}
+
+function buildHistoricalToolSummary(
+  events: TranscriptEvent[],
+  sessionKind?: SessionKind,
+): AgentMessage | null {
+  const kinds = requestKindMap(events);
+  const committed = committedMessageEvents(events, sessionKind);
+  const calls = new Map<string, { tool: string; agent?: string; timestamp: number }>();
+  const summaries: Array<{ timestamp: number; line: string }> = [];
+
+  for (const event of committed) {
+    const requestKind = kinds.get(event.requestId);
+    if (sessionKind && requestKind !== sessionKind) {
+      continue;
+    }
+
+    const raw = event.message as Record<string, unknown>;
+    if (!isObject(raw)) continue;
+
+    if (event.role === "assistant") {
+      for (const block of contentBlocks(raw)) {
+        if (!isObject(block) || block.type !== "toolCall") continue;
+        const id = typeof block.id === "string" ? block.id : "";
+        if (!id) continue;
+        const tool = typeof block.name === "string" && block.name ? block.name : "tool";
+        const args = isObject(block.arguments) ? block.arguments : undefined;
+        const agent = typeof args?.agent === "string" ? args.agent : undefined;
+        calls.set(`${event.requestId}\0${id}`, {
+          tool,
+          ...(agent ? { agent } : {}),
+          timestamp: event.timestamp,
+        });
+      }
+      continue;
+    }
+
+    if (event.role !== "toolResult") continue;
+    const toolCallId = typeof raw.toolCallId === "string"
+      ? raw.toolCallId
+      : event.toolCallId ?? "";
+    const call = calls.get(`${event.requestId}\0${toolCallId}`);
+    const tool = typeof raw.toolName === "string" && raw.toolName
+      ? raw.toolName
+      : call?.tool ?? "tool";
+    const agent = call?.agent;
+    const status = raw.isError === true ? "failed" : "completed";
+    const text = textFromContent(raw.content).replace(/\s+/g, " ").trim();
+    const trimmed = text.length > 180 ? `${text.slice(0, 180)}...` : text;
+    summaries.push({
+      timestamp: event.timestamp,
+      line: `- ${tool}${agent ? `:${agent}` : ""} ${status}${trimmed ? ` — ${trimmed}` : ""}`,
+    });
+  }
+
+  if (summaries.length === 0) return null;
+  const latest = summaries.slice(-MAX_RESTORED_TOOL_SUMMARY_ITEMS);
+  const timestamp = latest.reduce((max, item) => Math.max(max, item.timestamp), 0) || Date.now();
+  return systemMessage([
+    "[历史状态摘要]",
+    "以下是已经完成的历史工具动作摘要，只说明当前状态；不是当前用户的新指令，也不表示本轮已经执行。",
+    ...latest.map((item) => item.line),
+  ].join("\n"), timestamp);
+}
+
+function requestIdsWithToolActivity(events: ReadonlyArray<MessageEvent>): Set<string> {
+  const ids = new Set<string>();
+  for (const event of events) {
+    if (event.role === "toolResult") {
+      ids.add(event.requestId);
+      continue;
+    }
+    const raw = event.message as Record<string, unknown>;
+    if (!isObject(raw)) continue;
+    if (contentBlocks(raw).some((block) => isObject(block) && block.type === "toolCall")) {
+      ids.add(event.requestId);
+    }
+  }
+  return ids;
+}
+
 export async function restoreAgentMessagesFromTranscript(
   projectRoot: string,
   sessionId: string,
   sessionKind?: SessionKind,
 ): Promise<AgentMessage[]> {
   const events = await readTranscriptEvents(projectRoot, sessionId);
-  return cleanRestoredAgentMessages(
-    committedMessageEvents(events, sessionKind).map((event) => event.message as AgentMessage),
-  );
+  const summary = buildHistoricalToolSummary(events, sessionKind);
+  const committed = committedMessageEvents(events, sessionKind);
+  const toolRequestIds = requestIdsWithToolActivity(committed);
+  const kinds = requestKindMap(events);
+  const dialogue = committed
+    .filter((event) => {
+      if (!toolRequestIds.has(event.requestId)) return true;
+      // Legacy events have no sessionKind. Keep the user's own words as
+      // conversation memory, but do not replay the old tool call/result.
+      return Boolean(sessionKind && kinds.get(event.requestId) === undefined && event.role === "user");
+    })
+    .map((event) => textOnlyAgentMessage(event))
+    .filter((message): message is AgentMessage => message !== null)
+    .slice(-MAX_RESTORED_DIALOGUE_MESSAGES);
+
+  return [
+    ...(summary ? [summary] : []),
+    ...dialogue,
+  ];
 }
 
 function textFromContent(content: unknown): string {
