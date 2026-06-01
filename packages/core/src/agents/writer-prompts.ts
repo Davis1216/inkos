@@ -51,6 +51,7 @@ export function buildWriterSystemPrompt(
         buildChapterMemoContract("en", governed),
         buildLengthGuidance(resolvedLengthSpec, "en"),
         buildWritingCraftCard("en"),
+        buildProseExecutionRules("en"),
         buildCreativeConstitution("en"),
         buildImmersionPillars("en"),
         buildGoldenOpeningDiscipline(chapterNumber, "en"),
@@ -73,6 +74,7 @@ export function buildWriterSystemPrompt(
         buildChapterMemoContract("zh", governed),
         buildLengthGuidance(resolvedLengthSpec, "zh"),
         buildWritingCraftCard("zh"),
+        buildProseExecutionRules("zh"),
         buildCreativeConstitution("zh"),
         buildImmersionPillars("zh"),
         buildGoldenOpeningDiscipline(chapterNumber, "zh"),
@@ -689,6 +691,28 @@ function buildNarrativePersonRule(bookRules: BookRules | null, language: "zh" | 
   return person === "first"
     ? "## 叙事人称（硬约束）\n本书必须全程使用第一人称（主角内心视角）叙述，禁止切换到第三人称或全知视角——此约束优先于题材惯例与你的默认倾向。"
     : "## 叙事人称（硬约束）\n本书使用第三人称叙述。";
+}
+
+/**
+ * Cross-theme failure modes surfaced by results-oriented testing across genres:
+ *  - simile over-reliance (~3 "像/仿佛/如同" per 1000 chars regardless of theme)
+ *  - high-density dramatic beats summarized instead of dramatized when the
+ *    chapter is tight (climaxes told, not shown).
+ * Theme-independent, so this lives in the always-on writer discipline.
+ */
+function buildProseExecutionRules(language: "zh" | "en"): string {
+  if (language === "en") {
+    return `## Prose execution (cross-theme failure modes)
+
+**Simile restraint.** Do not lean on "like / as if / as though" as a default device. At most one simile per scene, and only when it lights the image up better than plain rendering would. Priority is always: a precise verb > a concrete action or sensory detail > direct description > simile. Before reaching for "like…", check whether an exact verb or a concrete action would hit harder.
+
+**Play out the climax — never summarize it.** This chapter's high-density / high-stakes beats — a conflict erupting, life-or-death, a major turn, a reveal, an action climax — MUST be played out beat by beat (action, dialogue, the senses, pauses, pacing). Never compress them into "then he saved them, the police came, the antagonist was arrested." When a chapter packs several major events, expand the single most important one into a full scene; connective tissue may be compressed, but the key beat must never decay into a summary. The tighter the chapter, the harder this holds — if you are short on words, pack fewer events, do not render the climax as a synopsis.`;
+  }
+  return `## 文笔执行（跨题材通病纠正）
+
+**明喻节制。** 不要把"像/仿佛/如同/像……一样"当默认修辞反复用。每个场景明喻最多 1 处，且只在它真能点亮画面、比直写更准时才用。优先级永远是：精确的动词 > 具体的动作或感官细节 > 直接描写 > 明喻。想写"像……"之前，先问一句：换成一个准确的动词或一个具体动作，是不是更狠。
+
+**高潮必须演出、不许概述。** 本章的高密度／高风险节拍——冲突爆发、生死、重大转折、真相揭露、动作高潮——必须一拍一拍现场演出（动作、对话、五感、停顿、节奏），绝不能用一两句"然后他救了人、警察来了、对手被捕"带过。当一章里挤了多个重大事件时，挑最关键的那一拍写成完整场景，次要的可压成过渡，但最关键那拍永远不许退化成总结。章节越紧凑越要守这条——字数不够就少塞事件，而不是把高潮写成梗概。`;
 }
 
 function buildProtagonistRules(bookRules: BookRules | null): string {

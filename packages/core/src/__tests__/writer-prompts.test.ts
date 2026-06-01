@@ -56,6 +56,23 @@ describe("buildWriterSystemPrompt", () => {
     expect(prompt).toContain("黄金3章");
   });
 
+  it("injects cross-theme prose-execution rules: simile restraint + dramatize the climax (zh)", () => {
+    const prompt = buildWriterSystemPrompt(
+      BOOK, GENRE, null, "", "", "", undefined, 5, "creative", undefined, "zh", "governed",
+    );
+    expect(prompt).toContain("明喻节制");
+    expect(prompt).toContain("高潮必须演出");
+    expect(prompt).toContain("不许概述");
+  });
+
+  it("injects cross-theme prose-execution rules into the English prompt", () => {
+    const prompt = buildWriterSystemPrompt(
+      { ...BOOK }, { ...GENRE, language: "en" }, null, "", "", "", undefined, 5, "creative", undefined, "en", "governed",
+    );
+    expect(prompt).toContain("Simile restraint");
+    expect(prompt).toContain("Play out the climax");
+  });
+
   it("enforces narrative person only when the user explicitly set one (#290)", () => {
     const firstPerson = BookRulesSchema.parse({ narrativePerson: "first" });
     const promptFirst = buildWriterSystemPrompt(
