@@ -80,6 +80,7 @@ describe("public short-fiction chain", () => {
 
     expect(draft.chapters[1]?.title).toBe("她逼小三亲自递上了最后的刀");
     expect(draft.chapters[1]?.content).toContain("陈磊的慌张");
+    expect(draft.chapters[1]?.content).not.toContain("陆景琛踹开老宅院门");
     expect(draft.chapters[2]?.content).toContain("直播链接");
     expect(() => validateShortFictionDraftForFinal(draft, { expectedChapters: 3 })).not.toThrow();
   });

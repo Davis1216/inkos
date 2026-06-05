@@ -364,7 +364,7 @@ function extractDuplicateTitleTaggedChapterContent(raw: string, number: number):
 
   const start = duplicateTitle.index + duplicateTitle[0].length;
   const rest = raw.slice(start).replace(/^\s*\n/, "");
-  const nextTag = rest.search(/^\\s*===\\s*(?:CHAPTER\\s+\\d+\\s+(?:TITLE|CONTENT)|SHORT_FICTION_[A-Z0-9_ ]+)\\s*===\\s*$/im);
+  const nextTag = rest.search(/^\s*===\s*(?:CHAPTER\s+\d+\s+(?:TITLE|CONTENT)|SHORT_FICTION_[A-Z0-9_ ]+)\s*===\s*$/im);
   return (nextTag >= 0 ? rest.slice(0, nextTag) : rest).trim();
 }
 
