@@ -7,6 +7,7 @@ import {
 } from "./play-hud/types";
 import { HoldingSlot } from "./play-hud/HoldingSlot";
 import { HoldingInspect } from "./play-hud/HoldingInspect";
+import { StateGauge } from "./play-hud/StateGauge";
 
 // The HUD is genre-neutral: it renders whatever the world graph contains,
 // grouped into "what I face" (world/here-now) and "what I hold" (backpack).
@@ -437,29 +438,47 @@ export function PlayHud(props: {
 
   return (
     <aside className="absolute bottom-28 right-0 top-0 z-20 flex w-[330px] flex-col border-l border-border/40 bg-card/95 backdrop-blur shadow-xl">
-      <header className="flex items-center justify-between border-b border-border/40 px-4 py-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
-            <Gamepad2 size={13} />
-            <span className="truncate">{title}</span>
+      <header className="relative flex items-center gap-2.5 border-b border-border/40 px-4 py-3">
+        <span aria-hidden className="pointer-events-none absolute inset-x-0 -bottom-px h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" />
+        {view?.turn != null ? (
+          <div className="flex shrink-0 flex-col items-center leading-none">
+            <span className="text-xl font-extrabold text-primary">{view.turn}</span>
+            <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">{isZh ? "幕" : "Turn"}</span>
           </div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground">
-            {view?.turn != null ? `${isZh ? "第" : "Turn "}${view.turn}${isZh ? " 幕" : ""}` : isZh ? "尚未开始" : "Not started"}
-            {view?.mode ? ` · ${view.mode === "guided" ? (isZh ? "互动模式" : "Guided") : (isZh ? "开放模式" : "Open")}` : ""}
+        ) : (
+          <Gamepad2 size={16} className="shrink-0 text-primary" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[13px] font-bold text-foreground">{title}</div>
+          <div className="mt-0.5 text-[10.5px] text-muted-foreground">
+            {view?.turn == null
+              ? (isZh ? "尚未开始" : "Not started")
+              : view?.mode
+                ? (view.mode === "guided" ? (isZh ? "互动模式" : "Guided") : (isZh ? "开放模式" : "Open"))
+                : (isZh ? "互动世界" : "Play World")}
           </div>
         </div>
-        <button type="button" onClick={() => { setOpen(false); setSelectedHoldingId(null); }} className="text-muted-foreground hover:text-foreground" title={isZh ? "收起" : "Collapse"}>
+        {view?.time?.value ? (
+          <span className="shrink-0 rounded-full bg-secondary/60 px-2 py-0.5 text-[10.5px] text-muted-foreground" title={view.time.note ?? undefined}>
+            {view.time.value}
+          </span>
+        ) : null}
+        <button type="button" onClick={() => { setOpen(false); setSelectedHoldingId(null); }} className="shrink-0 text-muted-foreground hover:text-foreground" title={isZh ? "收起" : "Collapse"}>
           <X size={15} />
         </button>
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 text-sm">
         {!view ? (
-          <p className="text-xs leading-6 text-muted-foreground">
-            {isZh
-              ? "这个世界还没有状态。在左侧输入第一个动作，系统会生成开场并把人物、线索、状态显示在这里。"
-              : "No world state yet. Take your first action on the left and characters, clues, and state will appear here."}
-          </p>
+          <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border/50 bg-secondary/10 px-4 py-8 text-center">
+            <span className="text-3xl opacity-80">🎲</span>
+            <p className="text-[13px] font-semibold text-foreground">{isZh ? "这个世界还在沉睡" : "This world is still asleep"}</p>
+            <p className="text-[11.5px] leading-6 text-muted-foreground">
+              {isZh
+                ? "在左边写下你的第一个动作，人物、线索、状态会在这里逐渐点亮。"
+                : "Take your first action on the left — characters, clues, and state will light up here."}
+            </p>
+          </div>
         ) : selectedHolding ? (
           <HoldingInspect
             row={selectedHolding}
@@ -476,9 +495,10 @@ export function PlayHud(props: {
                 className="w-full rounded-lg border border-border/30 object-cover"
               />
             )}
-            {view.time ? (
+            {view.time && (view.time.note || view.time.details.length > 0) ? (
               <Zone
                 title={isZh ? "世界时间" : "World time"}
+                icon="⏳"
                 empty={false}
                 emptyText=""
               >
@@ -487,6 +507,7 @@ export function PlayHud(props: {
             ) : null}
             <Zone
               title={isZh ? "我面对的" : "Around me"}
+              icon="🧭"
               empty={view.facing.length === 0}
               emptyText={isZh ? "周围还没有出现地点或人物" : "No places or people around yet"}
             >
@@ -497,6 +518,7 @@ export function PlayHud(props: {
 
             <Zone
               title={isZh ? "我握有的" : "What I hold"}
+              icon="🎒"
               empty={view.holdings.length === 0}
               emptyText={isZh ? "还没有获得物品、证据或线索" : "No items, evidence, or clues yet"}
             >
@@ -513,11 +535,12 @@ export function PlayHud(props: {
 
             <Zone
               title={isZh ? "状态" : "State"}
+              icon="📊"
               empty={view.meters.length === 0}
               emptyText={isZh ? "还没有出现数值（压力、资源、关系、倒计时等）" : "No meters yet (pressure, resources, relations, timers…)"}
             >
               {view.meters.map((row) => (
-                <Row key={row.id} row={row} isZh={isZh} />
+                <StateGauge key={row.id} row={row} />
               ))}
             </Zone>
 
@@ -557,9 +580,10 @@ function PlayImagePanel(props: {
     { key: "inventory", label: isZh ? "为背包配图" : "Illustrate inventory" },
   ];
   return (
-    <section className="border-t border-border/30 pt-3">
-      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-        {isZh ? "自动配图" : "Auto illustration"}
+    <section className="relative rounded-xl border border-border/40 bg-secondary/20 px-3 pb-3 pt-2.5">
+      <span aria-hidden className="absolute left-3 top-0 h-0.5 w-5 -translate-y-px rounded-full bg-primary/70" />
+      <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+        <span className="text-xs">🎨</span>{isZh ? "自动配图" : "Auto illustration"}
       </h3>
       <div className="space-y-1.5">
         {options.map((opt) => (
@@ -599,17 +623,23 @@ function PlayImagePanel(props: {
 
 function Zone(props: {
   readonly title: string;
+  readonly icon: string;
   readonly empty: boolean;
   readonly emptyText: string;
   readonly children: React.ReactNode;
 }) {
   // Always render the category so the player sees the structure ("what kinds of
-  // things can show up here"); content fills in as the story produces it.
+  // things can show up here"); content fills in as the story produces it. The
+  // bordered block + accent tick give the panel a game-HUD feel without leaving
+  // Studio's muted theme tokens.
   return (
-    <section>
-      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">{props.title}</h3>
+    <section className="relative rounded-xl border border-border/40 bg-secondary/20 px-3 pb-3 pt-2.5">
+      <span aria-hidden className="absolute left-3 top-0 h-0.5 w-5 -translate-y-px rounded-full bg-primary/70" />
+      <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+        <span className="text-xs">{props.icon}</span>{props.title}
+      </h3>
       {props.empty ? (
-        <p className="text-[11px] italic leading-5 text-muted-foreground/40">{props.emptyText}</p>
+        <p className="text-[11px] leading-5 text-muted-foreground/50">{props.emptyText}</p>
       ) : (
         <div className="space-y-1.5">{props.children}</div>
       )}
